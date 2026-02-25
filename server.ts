@@ -10,50 +10,61 @@ import admin from "firebase-admin";
 let db: admin.firestore.Firestore | null = null;
 let firebaseStatus = {
   connected: false,
-  error: null as string | null
+  error: null as string | null,
+  checked: false
 };
 
-try {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+function initFirebase() {
+  if (firebaseStatus.checked && db) return db;
 
-  if (projectId && clientEmail && privateKey) {
-    if (!admin.apps.length) {
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId,
-          clientEmail,
-          privateKey: privateKey.replace(/\\n/g, '\n'),
-        }),
-      });
+  try {
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+    if (projectId && clientEmail && privateKey) {
+      // Fix for Vercel environment variable escaping
+      if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+        privateKey = privateKey.substring(1, privateKey.length - 1);
+      }
+      privateKey = privateKey.replace(/\\n/g, '\n');
+
+      if (!admin.apps.length) {
+        admin.initializeApp({
+          credential: admin.credential.cert({
+            projectId,
+            clientEmail,
+            privateKey,
+          }),
+        });
+      }
+      db = admin.firestore();
+      firebaseStatus.connected = true;
+      firebaseStatus.error = null;
+      firebaseStatus.checked = true;
+      console.log("Firebase Admin initialized successfully");
+      return db;
+    } else {
+      const missing = [];
+      if (!projectId) missing.push("FIREBASE_PROJECT_ID");
+      if (!clientEmail) missing.push("FIREBASE_CLIENT_EMAIL");
+      if (!privateKey) missing.push("FIREBASE_PRIVATE_KEY");
+      firebaseStatus.error = `Missing environment variables: ${missing.join(", ")}`;
+      firebaseStatus.checked = true;
+      console.warn("Firebase credentials missing:", firebaseStatus.error);
+      return null;
     }
-    db = admin.firestore();
-    // Test connection
-    db.collection('health').doc('check').set({ lastCheck: new Date().toISOString() })
-      .then(() => {
-        firebaseStatus.connected = true;
-        firebaseStatus.error = null;
-        console.log("Firebase Admin initialized and verified successfully");
-      })
-      .catch((err) => {
-        firebaseStatus.connected = false;
-        firebaseStatus.error = `Firestore Error: ${err.message}`;
-        console.error("Firebase Firestore connection test failed:", err);
-      });
-  } else {
-    const missing = [];
-    if (!projectId) missing.push("FIREBASE_PROJECT_ID");
-    if (!clientEmail) missing.push("FIREBASE_CLIENT_EMAIL");
-    if (!privateKey) missing.push("FIREBASE_PRIVATE_KEY");
-    firebaseStatus.error = `Missing environment variables: ${missing.join(", ")}`;
-    console.warn("Firebase credentials missing:", firebaseStatus.error);
+  } catch (error: any) {
+    firebaseStatus.connected = false;
+    firebaseStatus.error = `Init Error: ${error.message}`;
+    firebaseStatus.checked = true;
+    console.error("Error initializing Firebase Admin:", error);
+    return null;
   }
-} catch (error: any) {
-  firebaseStatus.connected = false;
-  firebaseStatus.error = `Init Error: ${error.message}`;
-  console.error("Error initializing Firebase Admin:", error);
 }
+
+// Initial attempt
+initFirebase();
 
 const DATA_FILE = path.join(process.cwd(), "data.json");
 
@@ -71,7 +82,11 @@ function readLocalData() {
 }
 
 function writeLocalData(data: any) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error("Failed to write local data (expected on read-only filesystems like Vercel):", e);
+  }
 }
 
 const app = express();
@@ -85,17 +100,22 @@ app.get("/health", (req, res) => {
 
 // Firebase Status
 app.get("/api/firebase-status", (req, res) => {
-  res.json(firebaseStatus);
+  initFirebase(); // Re-check if not initialized
+  res.json({
+    connected: firebaseStatus.connected,
+    error: firebaseStatus.error
+  });
 });
 
 // API Routes
 app.get("/api/data", async (req, res) => {
   try {
-    if (db) {
-      const usersSnap = await db.collection("users").get();
-      const loansSnap = await db.collection("loans").get();
-      const notifsSnap = await db.collection("notifications").orderBy("id", "desc").limit(200).get();
-      const systemSnap = await db.collection("system").doc("config").get();
+    const database = initFirebase();
+    if (database) {
+      const usersSnap = await database.collection("users").get();
+      const loansSnap = await database.collection("loans").get();
+      const notifsSnap = await database.collection("notifications").orderBy("id", "desc").limit(200).get();
+      const systemSnap = await database.collection("system").doc("config").get();
       
       const users = usersSnap.docs.map(doc => doc.data());
       const loans = loansSnap.docs.map(doc => doc.data());
@@ -112,19 +132,22 @@ app.get("/api/data", async (req, res) => {
     } else {
       res.json(readLocalData());
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error("Lỗi trong /api/data:", e);
-    res.status(500).json({ error: "Internal Server Error" });
+    firebaseStatus.connected = false;
+    firebaseStatus.error = `Runtime Error: ${e.message}`;
+    res.status(500).json({ error: "Internal Server Error", details: e.message });
   }
 });
 
 app.post("/api/users", async (req, res) => {
   try {
     const incomingUsers = req.body;
-    if (db) {
-      const batch = db.batch();
+    const database = initFirebase();
+    if (database) {
+      const batch = database.batch();
       incomingUsers.forEach((u: any) => {
-        const ref = db!.collection("users").doc(u.id);
+        const ref = database.collection("users").doc(u.id);
         batch.set(ref, u, { merge: true });
       });
       await batch.commit();
@@ -135,19 +158,20 @@ app.post("/api/users", async (req, res) => {
       writeLocalData(data);
       res.json({ success: true });
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error("Error saving users:", e);
-    res.status(500).json({ error: "Failed to save users" });
+    res.status(500).json({ error: "Failed to save users", details: e.message });
   }
 });
 
 app.post("/api/loans", async (req, res) => {
   try {
     const incomingLoans = req.body;
-    if (db) {
-      const batch = db.batch();
+    const database = initFirebase();
+    if (database) {
+      const batch = database.batch();
       incomingLoans.forEach((l: any) => {
-        const ref = db!.collection("loans").doc(l.id);
+        const ref = database.collection("loans").doc(l.id);
         batch.set(ref, l, { merge: true });
       });
       await batch.commit();
@@ -158,19 +182,20 @@ app.post("/api/loans", async (req, res) => {
       writeLocalData(data);
       res.json({ success: true });
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error("Error saving loans:", e);
-    res.status(500).json({ error: "Failed to save loans" });
+    res.status(500).json({ error: "Failed to save loans", details: e.message });
   }
 });
 
 app.post("/api/notifications", async (req, res) => {
   try {
     const incomingNotifs = req.body;
-    if (db) {
-      const batch = db.batch();
+    const database = initFirebase();
+    if (database) {
+      const batch = database.batch();
       incomingNotifs.forEach((n: any) => {
-        const ref = db!.collection("notifications").doc(n.id);
+        const ref = database.collection("notifications").doc(n.id);
         batch.set(ref, n, { merge: true });
       });
       await batch.commit();
@@ -181,17 +206,18 @@ app.post("/api/notifications", async (req, res) => {
       writeLocalData(data);
       res.json({ success: true });
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error("Error saving notifications:", e);
-    res.status(500).json({ error: "Failed to save notifications" });
+    res.status(500).json({ error: "Failed to save notifications", details: e.message });
   }
 });
 
 app.post("/api/budget", async (req, res) => {
   try {
     const { budget } = req.body;
-    if (db) {
-      await db.collection("system").doc("config").set({ budget }, { merge: true });
+    const database = initFirebase();
+    if (database) {
+      await database.collection("system").doc("config").set({ budget }, { merge: true });
       res.json({ success: true });
     } else {
       const data = readLocalData();
@@ -199,17 +225,18 @@ app.post("/api/budget", async (req, res) => {
       writeLocalData(data);
       res.json({ success: true });
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error("Error saving budget:", e);
-    res.status(500).json({ error: "Failed to save budget" });
+    res.status(500).json({ error: "Failed to save budget", details: e.message });
   }
 });
 
 app.post("/api/rankProfit", async (req, res) => {
   try {
     const { rankProfit } = req.body;
-    if (db) {
-      await db.collection("system").doc("config").set({ rankProfit }, { merge: true });
+    const database = initFirebase();
+    if (database) {
+      await database.collection("system").doc("config").set({ rankProfit }, { merge: true });
       res.json({ success: true });
     } else {
       const data = readLocalData();
@@ -217,23 +244,24 @@ app.post("/api/rankProfit", async (req, res) => {
       writeLocalData(data);
       res.json({ success: true });
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error("Error saving rankProfit:", e);
-    res.status(500).json({ error: "Failed to save rankProfit" });
+    res.status(500).json({ error: "Failed to save rankProfit", details: e.message });
   }
 });
 
 app.delete("/api/users/:id", async (req, res) => {
   try {
     const userId = req.params.id;
-    if (db) {
-      await db.collection("users").doc(userId).delete();
+    const database = initFirebase();
+    if (database) {
+      await database.collection("users").doc(userId).delete();
       
       // Delete associated loans and notifications
-      const loansSnap = await db.collection("loans").where("userId", "==", userId).get();
-      const notifsSnap = await db.collection("notifications").where("userId", "==", userId).get();
+      const loansSnap = await database.collection("loans").where("userId", "==", userId).get();
+      const notifsSnap = await database.collection("notifications").where("userId", "==", userId).get();
       
-      const batch = db.batch();
+      const batch = database.batch();
       loansSnap.docs.forEach(doc => batch.delete(doc.ref));
       notifsSnap.docs.forEach(doc => batch.delete(doc.ref));
       await batch.commit();
@@ -247,9 +275,9 @@ app.delete("/api/users/:id", async (req, res) => {
       writeLocalData(data);
       res.json({ success: true });
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error("Error deleting user:", e);
-    res.status(500).json({ error: "Failed to delete user" });
+    res.status(500).json({ error: "Failed to delete user", details: e.message });
   }
 });
 
