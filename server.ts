@@ -15,11 +15,10 @@ let firebaseStatus = {
 };
 
 function initFirebase() {
-  // In serverless, we should always check if we need to re-init or if the app exists
   try {
-    const projectId = process.env.FIREBASE_PROJECT_ID;
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-    let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+    const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+    let privateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
 
     if (!projectId || !clientEmail || !privateKey) {
       const missing = [];
@@ -32,32 +31,45 @@ function initFirebase() {
       return null;
     }
 
-    if (!admin.apps.length) {
-      // Fix for Vercel environment variable escaping
-      if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
-        privateKey = privateKey.substring(1, privateKey.length - 1);
-      }
-      privateKey = privateKey.replace(/\\n/g, '\n');
-
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId,
-          clientEmail,
-          privateKey,
-        }),
-      });
-      console.log("Firebase App initialized");
+    // Check if we already have an app initialized
+    if (admin.apps.length > 0) {
+      db = admin.firestore();
+      return db;
     }
 
+    // Deep clean private key for Vercel
+    // 1. Remove surrounding quotes if any
+    if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+      privateKey = privateKey.substring(1, privateKey.length - 1);
+    }
+    if (privateKey.startsWith("'") && privateKey.endsWith("'")) {
+      privateKey = privateKey.substring(1, privateKey.length - 1);
+    }
+    
+    // 2. Handle escaped newlines and actual newlines
+    privateKey = privateKey.replace(/\\n/g, '\n');
+    
+    // 3. Ensure it has the correct headers (sometimes lost during copy-paste)
+    if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
+      privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}`;
+    }
+    if (!privateKey.includes('-----END PRIVATE KEY-----')) {
+      privateKey = `${privateKey}\n-----END PRIVATE KEY-----`;
+    }
+
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId,
+        clientEmail,
+        privateKey,
+      }),
+    });
+    
     db = admin.firestore();
+    console.log("Firebase App initialized successfully on Vercel/Serverless");
     
-    // We don't set connected=true yet, we wait for a successful operation
-    // or assume it's okay if we've already verified it once in this instance
-    if (!firebaseStatus.connected) {
-      firebaseStatus.connected = true;
-      firebaseStatus.error = null;
-    }
-    
+    firebaseStatus.connected = true;
+    firebaseStatus.error = null;
     firebaseStatus.checked = true;
     return db;
   } catch (error: any) {
