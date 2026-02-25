@@ -1,6 +1,5 @@
 
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import path from "path";
 import cors from "cors";
@@ -10,11 +9,13 @@ import admin from "firebase-admin";
 let db: admin.firestore.Firestore | null = null;
 let firebaseStatus = {
   connected: false,
-  error: null as string | null,
-  checked: false
+  error: null as string | null
 };
 
 function initFirebase() {
+  // If already connected, just return the db
+  if (db && firebaseStatus.connected) return db;
+
   try {
     const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
     const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
@@ -27,16 +28,17 @@ function initFirebase() {
       if (!privateKey) missing.push("FIREBASE_PRIVATE_KEY");
       firebaseStatus.error = `THIẾU BIẾN: ${missing.join(", ")}. Hãy kiểm tra lại tab Environment Variables trên Vercel.`;
       firebaseStatus.connected = false;
-      firebaseStatus.checked = true;
       return null;
     }
 
     if (admin.apps.length > 0) {
       db = admin.firestore();
+      firebaseStatus.connected = true;
+      firebaseStatus.error = null;
       return db;
     }
 
-    // Xử lý Private Key cực kỳ cẩn thận
+    // Xử lý Private Key cực kỳ cẩn thận cho Vercel
     if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
       privateKey = privateKey.substring(1, privateKey.length - 1);
     }
@@ -61,22 +63,23 @@ function initFirebase() {
         }),
       });
       db = admin.firestore();
+      firebaseStatus.connected = true;
       firebaseStatus.error = null;
+      console.log("Firebase Admin initialized successfully");
       return db;
     } catch (initErr: any) {
       firebaseStatus.error = `LỖI CHỨNG CHỈ: ${initErr.message}. Có thể Private Key hoặc Client Email bị sai.`;
       firebaseStatus.connected = false;
+      console.error("Firebase Init Error:", initErr);
       return null;
     }
   } catch (error: any) {
     firebaseStatus.connected = false;
     firebaseStatus.error = `LỖI HỆ THỐNG: ${error.message}`;
+    console.error("Global Firebase Error:", error);
     return null;
   }
 }
-
-// Initial attempt
-initFirebase();
 
 const DATA_FILE = path.join(process.cwd(), "data.json");
 
@@ -95,11 +98,12 @@ function readLocalData() {
 
 function writeLocalData(data: any) {
   try {
-    if (process.env.NODE_ENV !== "production") {
+    // Vercel filesystem is read-only in production
+    if (process.env.NODE_ENV !== "production" && !process.env.VERCEL) {
       fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
     }
   } catch (e) {
-    // Silent fail for production read-only fs
+    console.error("Local write failed:", e);
   }
 }
 
@@ -116,7 +120,7 @@ app.get("/health", (req, res) => {
 app.get("/api/firebase-status", async (req, res) => {
   try {
     const database = initFirebase();
-    if (database) {
+    if (database && !firebaseStatus.error) {
       try {
         // Thử đọc một document bất kỳ để xác nhận quyền truy cập
         await database.collection('system').doc('config').get();
@@ -124,9 +128,8 @@ app.get("/api/firebase-status", async (req, res) => {
         firebaseStatus.error = null;
       } catch (e: any) {
         firebaseStatus.connected = false;
-        // Phân tích lỗi Firestore
         if (e.message.includes('PERMISSION_DENIED')) {
-          firebaseStatus.error = "LỖI QUYỀN TRUY CẬP: Service Account không có quyền đọc Firestore. Hãy kiểm tra vai trò 'Cloud Datastore User' hoặc 'Editor' trong IAM.";
+          firebaseStatus.error = "LỖI QUYỀN TRUY CẬP: Service Account không có quyền đọc Firestore. Hãy kiểm tra vai trò 'Cloud Datastore User' trong IAM.";
         } else if (e.message.includes('NOT_FOUND')) {
           firebaseStatus.error = "LỖI DATABASE: Không tìm thấy Database. Hãy đảm bảo bạn đã nhấn 'Create Database' trong Firebase Console.";
         } else {
@@ -134,10 +137,7 @@ app.get("/api/firebase-status", async (req, res) => {
         }
       }
     }
-    res.json({
-      connected: firebaseStatus.connected,
-      error: firebaseStatus.error
-    });
+    res.json(firebaseStatus);
   } catch (globalErr: any) {
     res.json({
       connected: false,
@@ -150,7 +150,7 @@ app.get("/api/firebase-status", async (req, res) => {
 app.get("/api/data", async (req, res) => {
   try {
     const database = initFirebase();
-    if (database) {
+    if (database && firebaseStatus.connected) {
       const usersSnap = await database.collection("users").get();
       const loansSnap = await database.collection("loans").get();
       const notifsSnap = await database.collection("notifications").orderBy("id", "desc").limit(200).get();
@@ -173,8 +173,6 @@ app.get("/api/data", async (req, res) => {
     }
   } catch (e: any) {
     console.error("Lỗi trong /api/data:", e);
-    firebaseStatus.connected = false;
-    firebaseStatus.error = `Runtime Error: ${e.message}`;
     res.status(500).json({ error: "Internal Server Error", details: e.message });
   }
 });
@@ -183,7 +181,7 @@ app.post("/api/users", async (req, res) => {
   try {
     const incomingUsers = req.body;
     const database = initFirebase();
-    if (database) {
+    if (database && firebaseStatus.connected) {
       const batch = database.batch();
       incomingUsers.forEach((u: any) => {
         const ref = database.collection("users").doc(u.id);
@@ -207,7 +205,7 @@ app.post("/api/loans", async (req, res) => {
   try {
     const incomingLoans = req.body;
     const database = initFirebase();
-    if (database) {
+    if (database && firebaseStatus.connected) {
       const batch = database.batch();
       incomingLoans.forEach((l: any) => {
         const ref = database.collection("loans").doc(l.id);
@@ -231,7 +229,7 @@ app.post("/api/notifications", async (req, res) => {
   try {
     const incomingNotifs = req.body;
     const database = initFirebase();
-    if (database) {
+    if (database && firebaseStatus.connected) {
       const batch = database.batch();
       incomingNotifs.forEach((n: any) => {
         const ref = database.collection("notifications").doc(n.id);
@@ -255,7 +253,7 @@ app.post("/api/budget", async (req, res) => {
   try {
     const { budget } = req.body;
     const database = initFirebase();
-    if (database) {
+    if (database && firebaseStatus.connected) {
       await database.collection("system").doc("config").set({ budget }, { merge: true });
       res.json({ success: true });
     } else {
@@ -274,7 +272,7 @@ app.post("/api/rankProfit", async (req, res) => {
   try {
     const { rankProfit } = req.body;
     const database = initFirebase();
-    if (database) {
+    if (database && firebaseStatus.connected) {
       await database.collection("system").doc("config").set({ rankProfit }, { merge: true });
       res.json({ success: true });
     } else {
@@ -293,7 +291,7 @@ app.delete("/api/users/:id", async (req, res) => {
   try {
     const userId = req.params.id;
     const database = initFirebase();
-    if (database) {
+    if (database && firebaseStatus.connected) {
       await database.collection("users").doc(userId).delete();
       
       // Delete associated loans and notifications
@@ -322,21 +320,22 @@ app.delete("/api/users/:id", async (req, res) => {
 
 async function startServer() {
   const PORT = 3000;
-  console.log(`Starting server in ${process.env.NODE_ENV || 'development'} mode`);
-
-  // Vite middleware for development
+  
   const distPath = path.join(process.cwd(), "dist");
-  const useVite = process.env.NODE_ENV !== "production" || !fs.existsSync(distPath);
+  const isProd = process.env.NODE_ENV === "production" || process.env.VERCEL === "1";
+  const useVite = !isProd || !fs.existsSync(distPath);
 
   if (useVite) {
-    console.log("Using Vite middleware");
+    console.log("Using Vite middleware (Development)");
+    // Dynamic import to avoid crash in production
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    console.log("Serving static files from dist");
+    console.log("Serving static files from dist (Production)");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
@@ -348,7 +347,8 @@ async function startServer() {
   });
 }
 
-if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
+// Only start the standalone server if not on Vercel
+if (!process.env.VERCEL) {
   startServer();
 }
 
