@@ -25,31 +25,26 @@ function initFirebase() {
       if (!projectId) missing.push("FIREBASE_PROJECT_ID");
       if (!clientEmail) missing.push("FIREBASE_CLIENT_EMAIL");
       if (!privateKey) missing.push("FIREBASE_PRIVATE_KEY");
-      firebaseStatus.error = `Thiếu biến môi trường: ${missing.join(", ")}`;
+      firebaseStatus.error = `THIẾU BIẾN: ${missing.join(", ")}. Hãy kiểm tra lại tab Environment Variables trên Vercel.`;
       firebaseStatus.connected = false;
       firebaseStatus.checked = true;
       return null;
     }
 
-    // Check if we already have an app initialized
     if (admin.apps.length > 0) {
       db = admin.firestore();
       return db;
     }
 
-    // Deep clean private key for Vercel
-    // 1. Remove surrounding quotes if any
+    // Xử lý Private Key cực kỳ cẩn thận
     if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
       privateKey = privateKey.substring(1, privateKey.length - 1);
     }
-    if (privateKey.startsWith("'") && privateKey.endsWith("'")) {
-      privateKey = privateKey.substring(1, privateKey.length - 1);
-    }
     
-    // 2. Handle escaped newlines and actual newlines
+    // Thay thế các ký tự xuống dòng bị lỗi
     privateKey = privateKey.replace(/\\n/g, '\n');
     
-    // 3. Ensure it has the correct headers (sometimes lost during copy-paste)
+    // Kiểm tra định dạng RSA
     if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
       privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}`;
     }
@@ -57,26 +52,25 @@ function initFirebase() {
       privateKey = `${privateKey}\n-----END PRIVATE KEY-----`;
     }
 
-    admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId,
-        clientEmail,
-        privateKey,
-      }),
-    });
-    
-    db = admin.firestore();
-    console.log("Firebase App initialized successfully on Vercel/Serverless");
-    
-    firebaseStatus.connected = true;
-    firebaseStatus.error = null;
-    firebaseStatus.checked = true;
-    return db;
+    try {
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId,
+          clientEmail,
+          privateKey,
+        }),
+      });
+      db = admin.firestore();
+      firebaseStatus.error = null;
+      return db;
+    } catch (initErr: any) {
+      firebaseStatus.error = `LỖI CHỨNG CHỈ: ${initErr.message}. Có thể Private Key hoặc Client Email bị sai.`;
+      firebaseStatus.connected = false;
+      return null;
+    }
   } catch (error: any) {
     firebaseStatus.connected = false;
-    firebaseStatus.error = `Lỗi khởi tạo: ${error.message}`;
-    firebaseStatus.checked = true;
-    console.error("Firebase Init Error:", error);
+    firebaseStatus.error = `LỖI HỆ THỐNG: ${error.message}`;
     return null;
   }
 }
@@ -101,13 +95,11 @@ function readLocalData() {
 
 function writeLocalData(data: any) {
   try {
-    // Vercel filesystem is read-only, this will likely fail in production
-    // but we keep it for local development fallback
     if (process.env.NODE_ENV !== "production") {
       fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
     }
   } catch (e) {
-    console.error("Failed to write local data:", e);
+    // Silent fail for production read-only fs
   }
 }
 
@@ -122,22 +114,36 @@ app.get("/health", (req, res) => {
 
 // Firebase Status & Connection Test
 app.get("/api/firebase-status", async (req, res) => {
-  const database = initFirebase();
-  if (database) {
-    try {
-      // Perform a real read to verify connection
-      await database.collection('system').doc('config').get();
-      firebaseStatus.connected = true;
-      firebaseStatus.error = null;
-    } catch (e: any) {
-      firebaseStatus.connected = false;
-      firebaseStatus.error = `Lỗi kết nối Firestore: ${e.message}. Hãy đảm bảo bạn đã tạo Database trong Firebase Console.`;
+  try {
+    const database = initFirebase();
+    if (database) {
+      try {
+        // Thử đọc một document bất kỳ để xác nhận quyền truy cập
+        await database.collection('system').doc('config').get();
+        firebaseStatus.connected = true;
+        firebaseStatus.error = null;
+      } catch (e: any) {
+        firebaseStatus.connected = false;
+        // Phân tích lỗi Firestore
+        if (e.message.includes('PERMISSION_DENIED')) {
+          firebaseStatus.error = "LỖI QUYỀN TRUY CẬP: Service Account không có quyền đọc Firestore. Hãy kiểm tra vai trò 'Cloud Datastore User' hoặc 'Editor' trong IAM.";
+        } else if (e.message.includes('NOT_FOUND')) {
+          firebaseStatus.error = "LỖI DATABASE: Không tìm thấy Database. Hãy đảm bảo bạn đã nhấn 'Create Database' trong Firebase Console.";
+        } else {
+          firebaseStatus.error = `LỖI KẾT NỐI: ${e.message}`;
+        }
+      }
     }
+    res.json({
+      connected: firebaseStatus.connected,
+      error: firebaseStatus.error
+    });
+  } catch (globalErr: any) {
+    res.json({
+      connected: false,
+      error: `LỖI CRITICAL: ${globalErr.message}`
+    });
   }
-  res.json({
-    connected: firebaseStatus.connected,
-    error: firebaseStatus.error
-  });
 });
 
 // API Routes
