@@ -15,50 +15,56 @@ let firebaseStatus = {
 };
 
 function initFirebase() {
-  if (firebaseStatus.checked && db) return db;
-
+  // In serverless, we should always check if we need to re-init or if the app exists
   try {
     const projectId = process.env.FIREBASE_PROJECT_ID;
     const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
     let privateKey = process.env.FIREBASE_PRIVATE_KEY;
 
-    if (projectId && clientEmail && privateKey) {
+    if (!projectId || !clientEmail || !privateKey) {
+      const missing = [];
+      if (!projectId) missing.push("FIREBASE_PROJECT_ID");
+      if (!clientEmail) missing.push("FIREBASE_CLIENT_EMAIL");
+      if (!privateKey) missing.push("FIREBASE_PRIVATE_KEY");
+      firebaseStatus.error = `Thiếu biến môi trường: ${missing.join(", ")}`;
+      firebaseStatus.connected = false;
+      firebaseStatus.checked = true;
+      return null;
+    }
+
+    if (!admin.apps.length) {
       // Fix for Vercel environment variable escaping
       if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
         privateKey = privateKey.substring(1, privateKey.length - 1);
       }
       privateKey = privateKey.replace(/\\n/g, '\n');
 
-      if (!admin.apps.length) {
-        admin.initializeApp({
-          credential: admin.credential.cert({
-            projectId,
-            clientEmail,
-            privateKey,
-          }),
-        });
-      }
-      db = admin.firestore();
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId,
+          clientEmail,
+          privateKey,
+        }),
+      });
+      console.log("Firebase App initialized");
+    }
+
+    db = admin.firestore();
+    
+    // We don't set connected=true yet, we wait for a successful operation
+    // or assume it's okay if we've already verified it once in this instance
+    if (!firebaseStatus.connected) {
       firebaseStatus.connected = true;
       firebaseStatus.error = null;
-      firebaseStatus.checked = true;
-      console.log("Firebase Admin initialized successfully");
-      return db;
-    } else {
-      const missing = [];
-      if (!projectId) missing.push("FIREBASE_PROJECT_ID");
-      if (!clientEmail) missing.push("FIREBASE_CLIENT_EMAIL");
-      if (!privateKey) missing.push("FIREBASE_PRIVATE_KEY");
-      firebaseStatus.error = `Missing environment variables: ${missing.join(", ")}`;
-      firebaseStatus.checked = true;
-      console.warn("Firebase credentials missing:", firebaseStatus.error);
-      return null;
     }
+    
+    firebaseStatus.checked = true;
+    return db;
   } catch (error: any) {
     firebaseStatus.connected = false;
-    firebaseStatus.error = `Init Error: ${error.message}`;
+    firebaseStatus.error = `Lỗi khởi tạo: ${error.message}`;
     firebaseStatus.checked = true;
-    console.error("Error initializing Firebase Admin:", error);
+    console.error("Firebase Init Error:", error);
     return null;
   }
 }
@@ -83,9 +89,13 @@ function readLocalData() {
 
 function writeLocalData(data: any) {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    // Vercel filesystem is read-only, this will likely fail in production
+    // but we keep it for local development fallback
+    if (process.env.NODE_ENV !== "production") {
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    }
   } catch (e) {
-    console.error("Failed to write local data (expected on read-only filesystems like Vercel):", e);
+    console.error("Failed to write local data:", e);
   }
 }
 
@@ -98,9 +108,20 @@ app.get("/health", (req, res) => {
   res.send("OK");
 });
 
-// Firebase Status
-app.get("/api/firebase-status", (req, res) => {
-  initFirebase(); // Re-check if not initialized
+// Firebase Status & Connection Test
+app.get("/api/firebase-status", async (req, res) => {
+  const database = initFirebase();
+  if (database) {
+    try {
+      // Perform a real read to verify connection
+      await database.collection('system').doc('config').get();
+      firebaseStatus.connected = true;
+      firebaseStatus.error = null;
+    } catch (e: any) {
+      firebaseStatus.connected = false;
+      firebaseStatus.error = `Lỗi kết nối Firestore: ${e.message}. Hãy đảm bảo bạn đã tạo Database trong Firebase Console.`;
+    }
+  }
   res.json({
     connected: firebaseStatus.connected,
     error: firebaseStatus.error
