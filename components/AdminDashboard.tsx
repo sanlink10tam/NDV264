@@ -79,7 +79,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, loans, registered
             <div className="flex items-center gap-1.5 mt-0.5">
               <div className={`w-1.5 h-1.5 ${firebaseStatus?.connected ? 'bg-blue-500' : 'bg-red-500'} rounded-full`}></div>
               <span className="text-[7px] font-black text-gray-600 uppercase tracking-[0.1em]">
-                Firebase: {firebaseStatus?.connected ? 'Đã kết nối' : 'Lỗi kết nối'}
+                Supabase: {firebaseStatus?.connected ? 'Đã kết nối' : 'Lỗi kết nối'}
               </span>
             </div>
             {firebaseStatus?.error && (

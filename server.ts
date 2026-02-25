@@ -3,80 +3,39 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import cors from "cors";
-import admin from "firebase-admin";
+import { createClient } from "@supabase/supabase-js";
 
-// Initialize Firebase Admin
-let db: admin.firestore.Firestore | null = null;
-let firebaseStatus = {
+// Initialize Supabase
+const supabaseUrl = process.env.SUPABASE_URL?.trim();
+const supabaseKey = process.env.SUPABASE_KEY?.trim();
+
+let supabase: any = null;
+let supabaseStatus = {
   connected: false,
   error: null as string | null
 };
 
-function initFirebase() {
-  // If already connected, just return the db
-  if (db && firebaseStatus.connected) return db;
+function initSupabase() {
+  if (supabase && supabaseStatus.connected) return supabase;
+
+  if (!supabaseUrl || !supabaseKey) {
+    supabaseStatus.error = "THIẾU BIẾN: SUPABASE_URL hoặc SUPABASE_KEY. Hãy kiểm tra lại tab Environment Variables trên Vercel.";
+    supabaseStatus.connected = false;
+    return null;
+  }
 
   try {
-    const projectId = process.env.FIREBASE_PROJECT_ID?.trim();
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
-    let privateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
-
-    if (!projectId || !clientEmail || !privateKey) {
-      const missing = [];
-      if (!projectId) missing.push("FIREBASE_PROJECT_ID");
-      if (!clientEmail) missing.push("FIREBASE_CLIENT_EMAIL");
-      if (!privateKey) missing.push("FIREBASE_PRIVATE_KEY");
-      firebaseStatus.error = `THIẾU BIẾN: ${missing.join(", ")}. Hãy kiểm tra lại tab Environment Variables trên Vercel.`;
-      firebaseStatus.connected = false;
-      return null;
-    }
-
-    if (admin.apps.length > 0) {
-      db = admin.firestore();
-      firebaseStatus.connected = true;
-      firebaseStatus.error = null;
-      return db;
-    }
-
-    // Xử lý Private Key cực kỳ cẩn thận cho Vercel
-    if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
-      privateKey = privateKey.substring(1, privateKey.length - 1);
-    }
-    
-    // Thay thế các ký tự xuống dòng bị lỗi
-    privateKey = privateKey.replace(/\\n/g, '\n');
-    
-    // Kiểm tra định dạng RSA
-    if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
-      privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}`;
-    }
-    if (!privateKey.includes('-----END PRIVATE KEY-----')) {
-      privateKey = `${privateKey}\n-----END PRIVATE KEY-----`;
-    }
-
-    try {
-      admin.initializeApp({
-        credential: admin.credential.cert({
-          projectId,
-          clientEmail,
-          privateKey,
-        }),
-      });
-      db = admin.firestore();
-      firebaseStatus.connected = true;
-      firebaseStatus.error = null;
-      console.log("Firebase Admin initialized successfully");
-      return db;
-    } catch (initErr: any) {
-      firebaseStatus.error = `LỖI CHỨNG CHỈ: ${initErr.message}. Có thể Private Key hoặc Client Email bị sai.`;
-      firebaseStatus.connected = false;
-      console.error("Firebase Init Error:", initErr);
-      return null;
-    }
+    supabase = createClient(supabaseUrl, supabaseKey, {
+      auth: {
+        persistSession: false
+      }
+    });
+    supabaseStatus.connected = true;
+    supabaseStatus.error = null;
+    return supabase;
   } catch (error: any) {
-    firebaseStatus.connected = false;
-    firebaseStatus.error = `LỖI HỆ THỐNG: ${error.message}`;
-    console.error("Global Firebase Error:", error);
+    supabaseStatus.connected = false;
+    supabaseStatus.error = `Lỗi khởi tạo Supabase: ${error.message}`;
     return null;
   }
 }
@@ -116,28 +75,23 @@ app.get("/health", (req, res) => {
   res.send("OK");
 });
 
-// Firebase Status & Connection Test
+// Supabase Status & Connection Test
 app.get("/api/firebase-status", async (req, res) => {
   try {
-    const database = initFirebase();
-    if (database && !firebaseStatus.error) {
+    const client = initSupabase();
+    if (client && !supabaseStatus.error) {
       try {
         // Thử đọc một document bất kỳ để xác nhận quyền truy cập
-        await database.collection('system').doc('config').get();
-        firebaseStatus.connected = true;
-        firebaseStatus.error = null;
+        const { error } = await client.from('system_config').select('id').limit(1);
+        if (error) throw error;
+        supabaseStatus.connected = true;
+        supabaseStatus.error = null;
       } catch (e: any) {
-        firebaseStatus.connected = false;
-        if (e.message.includes('PERMISSION_DENIED')) {
-          firebaseStatus.error = "LỖI QUYỀN TRUY CẬP: Service Account không có quyền đọc Firestore. Hãy kiểm tra vai trò 'Cloud Datastore User' trong IAM.";
-        } else if (e.message.includes('NOT_FOUND')) {
-          firebaseStatus.error = "LỖI DATABASE: Không tìm thấy Database. Hãy đảm bảo bạn đã nhấn 'Create Database' trong Firebase Console.";
-        } else {
-          firebaseStatus.error = `LỖI KẾT NỐI: ${e.message}`;
-        }
+        supabaseStatus.connected = false;
+        supabaseStatus.error = `Lỗi kết nối Supabase: ${e.message}. Hãy đảm bảo bạn đã chạy lệnh SQL tạo bảng.`;
       }
     }
-    res.json(firebaseStatus);
+    res.json(supabaseStatus);
   } catch (globalErr: any) {
     res.json({
       connected: false,
@@ -149,17 +103,19 @@ app.get("/api/firebase-status", async (req, res) => {
 // API Routes
 app.get("/api/data", async (req, res) => {
   try {
-    const database = initFirebase();
-    if (database && firebaseStatus.connected) {
-      const usersSnap = await database.collection("users").get();
-      const loansSnap = await database.collection("loans").get();
-      const notifsSnap = await database.collection("notifications").orderBy("id", "desc").limit(200).get();
-      const systemSnap = await database.collection("system").doc("config").get();
+    const client = initSupabase();
+    if (client && supabaseStatus.connected) {
+      const [usersRes, loansRes, notifsRes, configRes] = await Promise.all([
+        client.from('users').select('data'),
+        client.from('loans').select('data'),
+        client.from('notifications').select('data').order('id', { ascending: false }).limit(200),
+        client.from('system_config').select('data').eq('id', 'config').single()
+      ]);
       
-      const users = usersSnap.docs.map(doc => doc.data());
-      const loans = loansSnap.docs.map(doc => doc.data());
-      const notifications = notifsSnap.docs.map(doc => doc.data());
-      const systemData = systemSnap.exists ? systemSnap.data() : { budget: 30000000, rankProfit: 0 };
+      const users = usersRes.data?.map(d => d.data) || [];
+      const loans = loansRes.data?.map(d => d.data) || [];
+      const notifications = notifsRes.data?.map(d => d.data) || [];
+      const systemData = configRes.data?.data || { budget: 30000000, rankProfit: 0 };
 
       res.json({
         users,
@@ -180,14 +136,11 @@ app.get("/api/data", async (req, res) => {
 app.post("/api/users", async (req, res) => {
   try {
     const incomingUsers = req.body;
-    const database = initFirebase();
-    if (database && firebaseStatus.connected) {
-      const batch = database.batch();
-      incomingUsers.forEach((u: any) => {
-        const ref = database.collection("users").doc(u.id);
-        batch.set(ref, u, { merge: true });
-      });
-      await batch.commit();
+    const client = initSupabase();
+    if (client && supabaseStatus.connected) {
+      const rows = incomingUsers.map((u: any) => ({ id: u.id, data: u }));
+      const { error } = await client.from('users').upsert(rows);
+      if (error) throw error;
       res.json({ success: true });
     } else {
       const data = readLocalData();
@@ -204,14 +157,11 @@ app.post("/api/users", async (req, res) => {
 app.post("/api/loans", async (req, res) => {
   try {
     const incomingLoans = req.body;
-    const database = initFirebase();
-    if (database && firebaseStatus.connected) {
-      const batch = database.batch();
-      incomingLoans.forEach((l: any) => {
-        const ref = database.collection("loans").doc(l.id);
-        batch.set(ref, l, { merge: true });
-      });
-      await batch.commit();
+    const client = initSupabase();
+    if (client && supabaseStatus.connected) {
+      const rows = incomingLoans.map((l: any) => ({ id: l.id, data: l }));
+      const { error } = await client.from('loans').upsert(rows);
+      if (error) throw error;
       res.json({ success: true });
     } else {
       const data = readLocalData();
@@ -228,14 +178,11 @@ app.post("/api/loans", async (req, res) => {
 app.post("/api/notifications", async (req, res) => {
   try {
     const incomingNotifs = req.body;
-    const database = initFirebase();
-    if (database && firebaseStatus.connected) {
-      const batch = database.batch();
-      incomingNotifs.forEach((n: any) => {
-        const ref = database.collection("notifications").doc(n.id);
-        batch.set(ref, n, { merge: true });
-      });
-      await batch.commit();
+    const client = initSupabase();
+    if (client && supabaseStatus.connected) {
+      const rows = incomingNotifs.map((n: any) => ({ id: n.id, data: n }));
+      const { error } = await client.from('notifications').upsert(rows);
+      if (error) throw error;
       res.json({ success: true });
     } else {
       const data = readLocalData();
@@ -252,9 +199,12 @@ app.post("/api/notifications", async (req, res) => {
 app.post("/api/budget", async (req, res) => {
   try {
     const { budget } = req.body;
-    const database = initFirebase();
-    if (database && firebaseStatus.connected) {
-      await database.collection("system").doc("config").set({ budget }, { merge: true });
+    const client = initSupabase();
+    if (client && supabaseStatus.connected) {
+      const { data: current } = await client.from('system_config').select('data').eq('id', 'config').single();
+      const newData = { ...(current?.data || {}), budget };
+      const { error } = await client.from('system_config').upsert({ id: 'config', data: newData });
+      if (error) throw error;
       res.json({ success: true });
     } else {
       const data = readLocalData();
@@ -271,9 +221,12 @@ app.post("/api/budget", async (req, res) => {
 app.post("/api/rankProfit", async (req, res) => {
   try {
     const { rankProfit } = req.body;
-    const database = initFirebase();
-    if (database && firebaseStatus.connected) {
-      await database.collection("system").doc("config").set({ rankProfit }, { merge: true });
+    const client = initSupabase();
+    if (client && supabaseStatus.connected) {
+      const { data: current } = await client.from('system_config').select('data').eq('id', 'config').single();
+      const newData = { ...(current?.data || {}), rankProfit };
+      const { error } = await client.from('system_config').upsert({ id: 'config', data: newData });
+      if (error) throw error;
       res.json({ success: true });
     } else {
       const data = readLocalData();
@@ -290,19 +243,14 @@ app.post("/api/rankProfit", async (req, res) => {
 app.delete("/api/users/:id", async (req, res) => {
   try {
     const userId = req.params.id;
-    const database = initFirebase();
-    if (database && firebaseStatus.connected) {
-      await database.collection("users").doc(userId).delete();
-      
-      // Delete associated loans and notifications
-      const loansSnap = await database.collection("loans").where("userId", "==", userId).get();
-      const notifsSnap = await database.collection("notifications").where("userId", "==", userId).get();
-      
-      const batch = database.batch();
-      loansSnap.docs.forEach(doc => batch.delete(doc.ref));
-      notifsSnap.docs.forEach(doc => batch.delete(doc.ref));
-      await batch.commit();
-      
+    const client = initSupabase();
+    if (client && supabaseStatus.connected) {
+      // Delete user and their related data
+      await Promise.all([
+        client.from('users').delete().eq('id', userId),
+        client.from('loans').delete().filter('data->>userId', 'eq', userId),
+        client.from('notifications').delete().filter('data->>userId', 'eq', userId)
+      ]);
       res.json({ success: true });
     } else {
       const data = readLocalData();

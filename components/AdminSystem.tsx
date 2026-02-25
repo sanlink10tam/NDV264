@@ -29,7 +29,7 @@ const AdminSystem: React.FC<AdminSystemProps> = ({ onReset, onBack, firebaseStat
       <div className="bg-[#111111] border border-white/5 rounded-[2.5rem] p-8 space-y-8 mb-6">
         <div className="flex items-center gap-3">
           <Database className="text-[#ff8c00]" size={20} />
-          <h4 className="text-[11px] font-black text-white uppercase tracking-widest">Trạng thái Database (Firebase)</h4>
+          <h4 className="text-[11px] font-black text-white uppercase tracking-widest">Trạng thái Database (Supabase)</h4>
         </div>
 
         <div className={`rounded-[2rem] p-6 space-y-4 border ${firebaseStatus?.connected ? 'bg-blue-500/5 border-blue-500/10' : 'bg-red-500/5 border-red-500/10'}`}>
@@ -40,7 +40,7 @@ const AdminSystem: React.FC<AdminSystemProps> = ({ onReset, onBack, firebaseStat
               </div>
               <div>
                 <p className="text-[10px] font-black text-white uppercase tracking-widest">
-                  {firebaseStatus?.connected ? 'Đã kết nối Firebase' : 'Lỗi kết nối Firebase'}
+                  {firebaseStatus?.connected ? 'Đã kết nối Supabase' : 'Lỗi kết nối Supabase'}
                 </p>
                 <p className="text-[8px] font-bold text-gray-500 uppercase tracking-tighter">
                   {firebaseStatus?.connected ? 'Dữ liệu đang được lưu trữ an toàn trên Cloud' : 'Hệ thống đang sử dụng bộ nhớ tạm thời'}

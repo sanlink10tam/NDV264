@@ -1,6 +1,6 @@
 {
   "name": "Remix: NDV Money - Hệ Thống Vay Cá Nhân",
-  "description": "Hệ thống quản lý vay vốn cá nhân cao cấp tích hợp Firebase và Admin Dashboard.",
+  "description": "Hệ thống quản lý vay vốn cá nhân cao cấp tích hợp Supabase và Admin Dashboard.",
   "requestFramePermissions": [
     "camera"
   ]
