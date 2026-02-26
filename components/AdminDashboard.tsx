@@ -25,10 +25,10 @@ interface AdminDashboardProps {
   rankProfit: number;
   onResetRankProfit: () => void;
   onLogout: () => void;
-  firebaseStatus?: { connected: boolean; error: string | null };
+  supabaseStatus?: { connected: boolean; error: string | null };
 }
 
-const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, loans, registeredUsersCount, systemBudget, rankProfit, onResetRankProfit, onLogout, firebaseStatus }) => {
+const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, loans, registeredUsersCount, systemBudget, rankProfit, onResetRankProfit, onLogout, supabaseStatus }) => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   
   const settledLoans = loans.filter(l => l.status === 'ĐÃ TẤT TOÁN');
@@ -77,14 +77,14 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user, loans, registered
               <span className="text-[8px] font-black text-gray-500 uppercase tracking-[0.2em]">Hệ thống trực tuyến</span>
             </div>
             <div className="flex items-center gap-1.5 mt-0.5">
-              <div className={`w-1.5 h-1.5 ${firebaseStatus?.connected ? 'bg-blue-500' : 'bg-red-500'} rounded-full`}></div>
+              <div className={`w-1.5 h-1.5 ${supabaseStatus?.connected ? 'bg-blue-500' : 'bg-red-500'} rounded-full`}></div>
               <span className="text-[7px] font-black text-gray-600 uppercase tracking-[0.1em]">
-                Supabase: {firebaseStatus?.connected ? 'Đã kết nối' : 'Lỗi kết nối'}
+                Supabase: {supabaseStatus?.connected ? 'Đã kết nối' : 'Lỗi kết nối'}
               </span>
             </div>
-            {firebaseStatus?.error && (
+            {supabaseStatus?.error && (
               <div className="mt-1 px-2 py-0.5 bg-red-500/10 border border-red-500/20 rounded text-[6px] font-bold text-red-500 uppercase max-w-[150px] truncate">
-                {firebaseStatus.error}
+                {supabaseStatus.error}
               </div>
             )}
           </div>

@@ -64,7 +64,7 @@ const App: React.FC = () => {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
-  const [firebaseStatus, setFirebaseStatus] = useState<{ connected: boolean; error: string | null }>({ connected: false, error: null });
+  const [supabaseStatus, setSupabaseStatus] = useState<{ connected: boolean; error: string | null }>({ connected: false, error: null });
 
   const addNotification = (userId: string, title: string, message: string, type: 'LOAN' | 'RANK' | 'SYSTEM') => {
     const newNotif: Notification = {
@@ -109,10 +109,10 @@ const App: React.FC = () => {
         if (data.budget !== undefined) setSystemBudget(data.budget);
         if (data.rankProfit !== undefined) setRankProfit(data.rankProfit);
 
-        const statusRes = await fetch('/api/firebase-status');
+        const statusRes = await fetch('/api/supabase-status');
         if (statusRes.ok) {
           const statusData = await statusRes.json();
-          setFirebaseStatus(statusData);
+          setSupabaseStatus(statusData);
         }
 
         const savedUser = localStorage.getItem('vnv_user');
@@ -649,22 +649,32 @@ const App: React.FC = () => {
             }}
           />
         );
-      case AppView.ADMIN_DASHBOARD: return <AdminDashboard user={user} loans={loans} registeredUsersCount={registeredUsers.length} systemBudget={systemBudget} rankProfit={rankProfit} onResetRankProfit={handleResetRankProfit} onLogout={handleLogout} firebaseStatus={firebaseStatus} />;
+      case AppView.ADMIN_DASHBOARD: return <AdminDashboard user={user} loans={loans} registeredUsersCount={registeredUsers.length} systemBudget={systemBudget} rankProfit={rankProfit} onResetRankProfit={handleResetRankProfit} onLogout={handleLogout} supabaseStatus={supabaseStatus} />;
       case AppView.ADMIN_USERS: return <AdminUserManagement users={registeredUsers} loans={loans} onAction={handleAdminUserAction} onLoanAction={handleAdminLoanAction} onDeleteUser={handleDeleteUser} onAutoCleanup={handleAutoCleanupUsers} onBack={() => setCurrentView(AppView.ADMIN_DASHBOARD)} />;
       case AppView.ADMIN_BUDGET: return <AdminBudget currentBudget={systemBudget} onUpdate={(val) => setSystemBudget(val)} onBack={() => setCurrentView(AppView.ADMIN_DASHBOARD)} />;
       case AppView.ADMIN_SYSTEM: 
         return (
           <AdminSystem 
-            onReset={() => {
-              setRegisteredUsers([]);
-              setLoans([]);
-              setNotifications([]);
-              setSystemBudget(30000000);
-              setRankProfit(0);
-              alert("Hệ thống đã được khôi phục mặc định.");
+            onReset={async () => {
+              try {
+                const res = await fetch('/api/reset', { method: 'POST' });
+                if (res.ok) {
+                  setRegisteredUsers([]);
+                  setLoans([]);
+                  setNotifications([]);
+                  setSystemBudget(30000000);
+                  setRankProfit(0);
+                  alert("Hệ thống đã được khôi phục mặc định.");
+                } else {
+                  throw new Error("Reset failed on server");
+                }
+              } catch (e) {
+                console.error(e);
+                alert("Lỗi khi reset hệ thống.");
+              }
             }} 
             onBack={() => setCurrentView(AppView.ADMIN_DASHBOARD)} 
-            firebaseStatus={firebaseStatus}
+            supabaseStatus={supabaseStatus}
           />
         );
       default: return <Dashboard user={user} loans={loans} systemBudget={systemBudget} onApply={() => setCurrentView(AppView.APPLY_LOAN)} onLogout={handleLogout} onViewAllLoans={() => setCurrentView(AppView.APPLY_LOAN)} />;

@@ -1,4 +1,33 @@
 
+/**
+ * HƯỚNG DẪN TẠO BẢNG TRÊN SUPABASE (SQL EDITOR):
+ * 
+ * -- 1. Bảng cấu hình hệ thống
+ * CREATE TABLE system_config (
+ *   id TEXT PRIMARY KEY,
+ *   data JSONB NOT NULL
+ * );
+ * INSERT INTO system_config (id, data) VALUES ('config', '{"budget": 30000000, "rankProfit": 0}');
+ * 
+ * -- 2. Bảng người dùng
+ * CREATE TABLE users (
+ *   id TEXT PRIMARY KEY,
+ *   data JSONB NOT NULL
+ * );
+ * 
+ * -- 3. Bảng khoản vay
+ * CREATE TABLE loans (
+ *   id TEXT PRIMARY KEY,
+ *   data JSONB NOT NULL
+ * );
+ * 
+ * -- 4. Bảng thông báo
+ * CREATE TABLE notifications (
+ *   id TEXT PRIMARY KEY,
+ *   data JSONB NOT NULL
+ * );
+ */
+
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -19,12 +48,19 @@ function initSupabase() {
   if (supabase && supabaseStatus.connected) return supabase;
 
   if (!supabaseUrl || !supabaseKey) {
-    supabaseStatus.error = "THIẾU BIẾN: SUPABASE_URL hoặc SUPABASE_KEY. Hãy kiểm tra lại tab Environment Variables trên Vercel.";
+    const missing = [];
+    if (!supabaseUrl) missing.push("SUPABASE_URL");
+    if (!supabaseKey) missing.push("SUPABASE_KEY");
+    supabaseStatus.error = `THIẾU BIẾN: ${missing.join(", ")}. Hãy kiểm tra lại tab Environment Variables trên Vercel.`;
     supabaseStatus.connected = false;
+    console.error(supabaseStatus.error);
     return null;
   }
 
   try {
+    // Log partial info for debugging (safe)
+    console.log(`Khởi tạo Supabase với URL: ${supabaseUrl.substring(0, 15)}...`);
+    
     supabase = createClient(supabaseUrl, supabaseKey, {
       auth: {
         persistSession: false
@@ -36,6 +72,7 @@ function initSupabase() {
   } catch (error: any) {
     supabaseStatus.connected = false;
     supabaseStatus.error = `Lỗi khởi tạo Supabase: ${error.message}`;
+    console.error(supabaseStatus.error);
     return null;
   }
 }
@@ -76,27 +113,73 @@ app.get("/health", (req, res) => {
 });
 
 // Supabase Status & Connection Test
-app.get("/api/firebase-status", async (req, res) => {
+app.get("/api/supabase-status", async (req, res) => {
   try {
     const client = initSupabase();
-    if (client && !supabaseStatus.error) {
+    const tableStatus: Record<string, boolean> = {
+      system_config: false,
+      users: false,
+      loans: false,
+      notifications: false
+    };
+
+    if (client) {
       try {
-        // Thử đọc một document bất kỳ để xác nhận quyền truy cập
-        const { error } = await client.from('system_config').select('id').limit(1);
-        if (error) throw error;
-        supabaseStatus.connected = true;
-        supabaseStatus.error = null;
+        // Kiểm tra từng bảng một cách chi tiết
+        const checks = await Promise.all([
+          client.from('system_config').select('id').limit(1),
+          client.from('users').select('id').limit(1),
+          client.from('loans').select('id').limit(1),
+          client.from('notifications').select('id').limit(1)
+        ]);
+
+        tableStatus.system_config = !checks[0].error;
+        tableStatus.users = !checks[1].error;
+        tableStatus.loans = !checks[2].error;
+        tableStatus.notifications = !checks[3].error;
+
+        const allTablesOk = Object.values(tableStatus).every(v => v);
+        
+        if (!allTablesOk) {
+          const missing = Object.entries(tableStatus).filter(([_, ok]) => !ok).map(([name]) => name);
+          supabaseStatus.connected = true; // Kết nối được nhưng thiếu bảng
+          supabaseStatus.error = `Thiếu các bảng: ${missing.join(", ")}. Hãy chạy lệnh SQL bên dưới.`;
+        } else {
+          supabaseStatus.connected = true;
+          supabaseStatus.error = null;
+        }
       } catch (e: any) {
         supabaseStatus.connected = false;
-        supabaseStatus.error = `Lỗi kết nối Supabase: ${e.message}. Hãy đảm bảo bạn đã chạy lệnh SQL tạo bảng.`;
+        supabaseStatus.error = `Lỗi truy vấn: ${e.message}`;
       }
     }
-    res.json(supabaseStatus);
+    res.json({ ...supabaseStatus, tables: tableStatus });
   } catch (globalErr: any) {
+    console.error("Critical Supabase Error:", globalErr);
     res.json({
       connected: false,
-      error: `LỖI CRITICAL: ${globalErr.message}`
+      error: `LỖI CRITICAL: ${globalErr.message}`,
+      tables: {}
     });
+  }
+});
+
+app.post("/api/supabase-init", async (req, res) => {
+  try {
+    const client = initSupabase();
+    if (!client || !supabaseStatus.connected) {
+      return res.status(400).json({ error: "Chưa kết nối được Supabase" });
+    }
+
+    // Khởi tạo cấu hình mặc định nếu chưa có
+    const { data: existing } = await client.from('system_config').select('id').eq('id', 'config').single();
+    if (!existing) {
+      await client.from('system_config').upsert({ id: 'config', data: { budget: 30000000, rankProfit: 0 } });
+    }
+
+    res.json({ success: true, message: "Đã khởi tạo dữ liệu cấu hình mặc định" });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -240,6 +323,28 @@ app.post("/api/rankProfit", async (req, res) => {
   }
 });
 
+app.post("/api/reset", async (req, res) => {
+  try {
+    const client = initSupabase();
+    if (client && supabaseStatus.connected) {
+      await Promise.all([
+        client.from('users').delete().neq('id', 'AD01'), // Keep admin if exists
+        client.from('loans').delete().neq('id', '0'),
+        client.from('notifications').delete().neq('id', '0'),
+        client.from('system_config').upsert({ id: 'config', data: { budget: 30000000, rankProfit: 0 } })
+      ]);
+      res.json({ success: true });
+    } else {
+      const data = { users: [], loans: [], notifications: [], budget: 30000000, rankProfit: 0 };
+      writeLocalData(data);
+      res.json({ success: true });
+    }
+  } catch (e: any) {
+    console.error("Error resetting system:", e);
+    res.status(500).json({ error: "Failed to reset system", details: e.message });
+  }
+});
+
 app.delete("/api/users/:id", async (req, res) => {
   try {
     const userId = req.params.id;
@@ -269,13 +374,20 @@ app.delete("/api/users/:id", async (req, res) => {
 async function startServer() {
   const PORT = 3000;
   
-  const distPath = path.join(process.cwd(), "dist");
   const isProd = process.env.NODE_ENV === "production" || process.env.VERCEL === "1";
+  
+  // On Vercel, we only care about the API routes. 
+  // Static files are served by Vercel's edge network via vercel.json config.
+  if (process.env.VERCEL) {
+    console.log("Running as Vercel Serverless Function");
+    return;
+  }
+
+  const distPath = path.join(process.cwd(), "dist");
   const useVite = !isProd || !fs.existsSync(distPath);
 
   if (useVite) {
     console.log("Using Vite middleware (Development)");
-    // Dynamic import to avoid crash in production
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -283,7 +395,7 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    console.log("Serving static files from dist (Production)");
+    console.log("Serving static files from dist (Local Production)");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));

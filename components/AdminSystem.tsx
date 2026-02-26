@@ -5,16 +5,64 @@ import { Database, Settings, AlertCircle, RefreshCw, X, Check } from 'lucide-rea
 interface AdminSystemProps {
   onReset: () => void;
   onBack: () => void;
-  firebaseStatus?: { connected: boolean; error: string | null };
+  supabaseStatus?: { 
+    connected: boolean; 
+    error: string | null;
+    tables?: Record<string, boolean>;
+  };
 }
 
-const AdminSystem: React.FC<AdminSystemProps> = ({ onReset, onBack, firebaseStatus }) => {
+const AdminSystem: React.FC<AdminSystemProps> = ({ onReset, onBack, supabaseStatus }) => {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(false);
 
   const handleResetExecute = () => {
     onReset();
     setShowResetConfirm(false);
   };
+
+  const handleInitSupabase = async () => {
+    setIsInitializing(true);
+    try {
+      const res = await fetch('/api/supabase-init', { method: 'POST' });
+      if (res.ok) {
+        alert("Đã khởi tạo dữ liệu cấu hình mặc định trên Supabase!");
+        window.location.reload();
+      } else {
+        const err = await res.json();
+        alert("Lỗi: " + err.error);
+      }
+    } catch (e) {
+      alert("Lỗi kết nối server");
+    } finally {
+      setIsInitializing(false);
+    }
+  };
+
+  const sqlScript = `-- 1. Bảng cấu hình hệ thống
+CREATE TABLE system_config (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL
+);
+INSERT INTO system_config (id, data) VALUES ('config', '{"budget": 30000000, "rankProfit": 0}');
+
+-- 2. Bảng người dùng
+CREATE TABLE users (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL
+);
+
+-- 3. Bảng khoản vay
+CREATE TABLE loans (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL
+);
+
+-- 4. Bảng thông báo
+CREATE TABLE notifications (
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL
+);`;
 
   return (
     <div className="w-full bg-black min-h-screen px-5 pb-32 animate-in fade-in duration-500">
@@ -32,34 +80,71 @@ const AdminSystem: React.FC<AdminSystemProps> = ({ onReset, onBack, firebaseStat
           <h4 className="text-[11px] font-black text-white uppercase tracking-widest">Trạng thái Database (Supabase)</h4>
         </div>
 
-        <div className={`rounded-[2rem] p-6 space-y-4 border ${firebaseStatus?.connected ? 'bg-blue-500/5 border-blue-500/10' : 'bg-red-500/5 border-red-500/10'}`}>
+        <div className={`rounded-[2rem] p-6 space-y-4 border ${supabaseStatus?.connected ? 'bg-blue-500/5 border-blue-500/10' : 'bg-red-500/5 border-red-500/10'}`}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${firebaseStatus?.connected ? 'bg-blue-500/20 text-blue-500' : 'bg-red-500/20 text-red-500'}`}>
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${supabaseStatus?.connected ? 'bg-blue-500/20 text-blue-500' : 'bg-red-500/20 text-red-500'}`}>
                 <Database size={20} />
               </div>
               <div>
                 <p className="text-[10px] font-black text-white uppercase tracking-widest">
-                  {firebaseStatus?.connected ? 'Đã kết nối Supabase' : 'Lỗi kết nối Supabase'}
+                  {supabaseStatus?.connected ? 'Đã kết nối Supabase' : 'Lỗi kết nối Supabase'}
                 </p>
                 <p className="text-[8px] font-bold text-gray-500 uppercase tracking-tighter">
-                  {firebaseStatus?.connected ? 'Dữ liệu đang được lưu trữ an toàn trên Cloud' : 'Hệ thống đang sử dụng bộ nhớ tạm thời'}
+                  {supabaseStatus?.connected ? 'Dữ liệu đang được lưu trữ an toàn trên Cloud' : 'Hệ thống đang sử dụng bộ nhớ tạm thời'}
                 </p>
               </div>
             </div>
-            <div className={`px-3 py-1 rounded-full text-[8px] font-black uppercase ${firebaseStatus?.connected ? 'bg-blue-500/20 text-blue-500' : 'bg-red-500/20 text-red-500'}`}>
-              {firebaseStatus?.connected ? 'Online' : 'Offline'}
+            <div className={`px-3 py-1 rounded-full text-[8px] font-black uppercase ${supabaseStatus?.connected ? 'bg-blue-500/20 text-blue-500' : 'bg-red-500/20 text-red-500'}`}>
+              {supabaseStatus?.connected ? 'Online' : 'Offline'}
             </div>
           </div>
           
-          {firebaseStatus?.error && (
+          {supabaseStatus?.error && (
             <div className="p-4 bg-black/40 rounded-xl border border-red-500/20">
               <p className="text-[9px] font-black text-red-500 uppercase tracking-widest mb-1">Chi tiết lỗi:</p>
               <p className="text-[10px] font-mono text-gray-400 break-all leading-relaxed">
-                {firebaseStatus.error}
+                {supabaseStatus.error}
               </p>
             </div>
           )}
+
+          {/* Table Status Grid */}
+          <div className="grid grid-cols-2 gap-3 mt-4">
+            {['system_config', 'users', 'loans', 'notifications'].map(tableName => (
+              <div key={tableName} className="bg-black/20 p-3 rounded-xl border border-white/5 flex items-center justify-between">
+                <span className="text-[8px] font-black text-gray-500 uppercase">{tableName}</span>
+                {supabaseStatus?.tables?.[tableName] ? (
+                  <Check size={12} className="text-green-500" />
+                ) : (
+                  <X size={12} className="text-red-500" />
+                )}
+              </div>
+            ))}
+          </div>
+
+          <button 
+            onClick={handleInitSupabase}
+            disabled={isInitializing || !supabaseStatus?.connected}
+            className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-black py-4 rounded-2xl text-[9px] uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+          >
+            {isInitializing ? <RefreshCw className="animate-spin" size={14} /> : <Database size={14} />}
+            Khởi tạo dữ liệu mẫu
+          </button>
+        </div>
+
+        {/* SQL Script Display */}
+        <div className="bg-black/40 border border-white/5 rounded-[2rem] p-6 space-y-4">
+          <div className="flex items-center justify-between">
+            <h5 className="text-[9px] font-black text-gray-400 uppercase tracking-widest">Mã SQL khởi tạo bảng</h5>
+            <span className="text-[7px] font-bold text-blue-500 uppercase">Copy & Run in SQL Editor</span>
+          </div>
+          <pre className="bg-black p-4 rounded-xl text-[8px] font-mono text-blue-400/80 overflow-x-auto leading-relaxed border border-white/5">
+            {sqlScript}
+          </pre>
+          <p className="text-[8px] font-bold text-gray-600 uppercase leading-tight">
+            * Lưu ý: Bạn cần chạy mã này trong phần "SQL Editor" trên trang quản trị Supabase để tạo các thành phần cần thiết.
+          </p>
         </div>
 
         <div className="bg-red-500/5 border border-red-500/10 rounded-[2rem] p-6 space-y-6">
